@@ -14,6 +14,9 @@ class RouterInterface:
     Represents a single router interface (like a NIC on a host).
     L2 + L3 info are stored here.
     """
+    # NOTE: 'name' is for human-readable logs.
+    # We now usually store the port's display_name here,
+    # e.g. "Star Pro->port1".
     name: str
     mac: str
     ip: Optional[str] = None
@@ -32,7 +35,7 @@ class RouteEntry:
     network: str       # e.g. "10.0.0.0"
     netmask: str       # e.g. "255.255.255.0"
     next_hop: Optional[str]  # None for directly connected
-    out_iface: str     # interface name, e.g. "r1-p1"
+    out_iface: str     # interface name, e.g. "Star Pro->port1" (human-friendly)
 
 
 class Router(NetworkDevice):
@@ -67,12 +70,17 @@ class Router(NetworkDevice):
         port = super().add_port(cable)
 
         mac = self._generate_interface_mac()
-        iface = RouterInterface(name=port.name, mac=mac)
+        # Store a nice human-readable name on the interface:
+        #   e.g. "Star Pro->port1"
+        iface = RouterInterface(name=port.display_name, mac=mac)
+        # Still index by the stable technical port.name
         self.interfaces[port.name] = iface
 
         self._log.info(
             "Router %s: created interface %s with MAC %s",
-            self.name, iface.name, iface.mac
+            getattr(self, "friendly_name", self.name),
+            iface.name,
+            iface.mac,
         )
 
         return port
@@ -92,7 +100,11 @@ class Router(NetworkDevice):
         iface.netmask = netmask
         self._log.info(
             "Router %s L3 interface %s configured: IP=%s mask=%s MAC=%s",
-            self.name, iface.name, ip, netmask, iface.mac
+            getattr(self, "friendly_name", self.name),
+            iface.name,
+            ip,
+            netmask,
+            iface.mac,
         )
 
         # Optionally, add a connected route
@@ -107,6 +119,8 @@ class Router(NetworkDevice):
                   next_hop: Optional[str], out_iface: str) -> None:
         """
         Add a static route entry (for future L3 use).
+
+        out_iface should usually match RouterInterface.name, e.g. "Star Pro->port1".
         """
         self.routing_table.append(
             RouteEntry(network=network,
@@ -116,7 +130,11 @@ class Router(NetworkDevice):
         )
         self._log.info(
             "Router %s: route added %s/%s via %s out %s",
-            self.name, network, netmask, next_hop, out_iface
+            getattr(self, "friendly_name", self.name),
+            network,
+            netmask,
+            next_hop,
+            out_iface,
         )
 
     # dummy helper, proper implementation can come later
@@ -132,9 +150,11 @@ class Router(NetworkDevice):
         L1: raw bits arrived on a router port.
         Immediately attempt to interpret them as an Ethernet frame (L2).
         """
+        router_label = getattr(self, "friendly_name", self.name)
+
         self._log.info(
             "• L1: router %s received %d bytes on %s",
-            getattr(self, "friendly_name", self.name),
+            router_label,
             len(bits),
             port.display_name,
         )
@@ -145,15 +165,19 @@ class Router(NetworkDevice):
         except Exception as exc:
             self._log.warning(
                 "L2: router %s got invalid Ethernet frame on %s: %r",
-                self.name, port.name, exc
+                router_label,
+                port.display_name,
+                exc,
             )
             return
 
         iface = self.interfaces.get(port.name)
         if iface is None:
             self._log.error(
-                "Router %s: received frame on unknown port %s",
-                self.name, port.name
+                "Router %s: received frame on unknown port %s (%s)",
+                router_label,
+                port.name,
+                port.display_name,
             )
             return
 
@@ -167,12 +191,20 @@ class Router(NetworkDevice):
         if dst_mac == "ff:ff:ff:ff:ff:ff":
             self._log.info(
                 "L2: router %s saw broadcast frame on %s: src=%s dst=%s payload=%r",
-                self.name, port.name, src_mac, frame.dst, payload
+                router_label,
+                iface.name,   # human-readable interface name
+                src_mac,
+                frame.dst,
+                payload,
             )
         else:
             self._log.info(
                 "L2: router %s saw unicast frame on %s: src=%s dst=%s payload=%r",
-                self.name, port.name, src_mac, frame.dst, payload
+                router_label,
+                iface.name,
+                src_mac,
+                frame.dst,
+                payload,
             )
 
         # NOTE:
@@ -191,9 +223,11 @@ class Router(NetworkDevice):
         Future: ARP handling (requests/replies).
         Currently not called since driver does not trigger L3 flows yet.
         """
+        router_label = getattr(self, "friendly_name", self.name)
         self._log.info(
             "Router %s ARP handler stub on %s (not active yet)",
-            self.name, port.name
+            router_label,
+            iface.name,
         )
 
     def _handle_ip(self, port: NetworkPort,
@@ -203,7 +237,9 @@ class Router(NetworkDevice):
         Future: IP routing logic.
         Currently a stub → you can fully implement routing here later.
         """
+        router_label = getattr(self, "friendly_name", self.name)
         self._log.info(
             "Router %s IP handler stub on %s (not active yet)",
-            self.name, port.name
+            router_label,
+            iface.name,
         )
