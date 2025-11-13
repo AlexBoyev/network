@@ -1,0 +1,7 @@
+import yaml
+from pathlib import Path
+
+def load_device_config():
+    config_path = Path(__file__).resolve().parent.parent / "config" / "devices.yaml"
+    with open(config_path, "r") as f:
+        return yaml.safe_load(f)

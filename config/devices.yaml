@@ -1,0 +1,23 @@
+switch:
+  name: sw1
+  friendly_name: "TP-Link Archer AX53"
+  model: "Archer AX53"
+
+router:
+  name: r1
+  friendly_name: "Star Pro"
+  model: "Star Pro"
+
+enddevices:
+  host1:
+    role: "PC"
+    friendly_name: "Alex-PC"
+    model: "Some Gaming PC"
+  host2:
+    role: "Phone"
+    friendly_name: "Samsung Galaxy S24"
+    model: "Galaxy S24"
+  host3:
+    role: "Printer"
+    friendly_name: "HP LaserJet Pro M404"
+    model: "LaserJet M404"
