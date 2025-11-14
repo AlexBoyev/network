@@ -8,6 +8,7 @@ from network.components.cable import Cable
 from network.devices.end_device import EndDevice
 from network.devices.switch import Switch
 from network.devices.router import Router
+from network.services.dhcp import DHCPPool
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +166,9 @@ def activate_l2(sw: Switch, hosts: tuple[EndDevice, EndDevice, EndDevice]) -> No
     dst_mac_h2 = h2.nic.mac
     log.info(
         "• L2 test #2: %s (%s) sends 'hello phone' to %s (%s) "
-        "[src MAC=%s -> dst MAC=%s]",
+        "[src MAC=%s -> dst MAC=%s]. "
+        "First time, switch doesn't know the phone MAC yet, "
+        "so it will FLOOD the frame to all ports except the incoming one.",
         h1.friendly_name,
         h1.role,
         h2.friendly_name,
@@ -175,12 +178,25 @@ def activate_l2(sw: Switch, hosts: tuple[EndDevice, EndDevice, EndDevice]) -> No
     )
     h1.send_frame(dst_mac_h2, b"hello phone")
 
-    # <<< NEW: ultra-simple human flow line
+    # Optional: summarize MAC learning after first unicast
     log.info(
-        "• FLOW: %s -> %s",
-        h1.role or h1.friendly_name,   # "PC"
-        h2.role or h2.friendly_name,   # "Phone"
+        "• After first unicast, switch MAC table should now know where "
+        "PC (%s) and Phone (%s) live.",
+        h1.nic.mac,
+        h2.nic.mac,
     )
+
+    # --- L2 Test 3: PC -> Phone again (now switch should unicast) ---
+    log.info(
+        "• L2 test #3: %s (%s) sends another 'hello phone' to %s (%s). "
+        "Now the switch SHOULD forward only to the correct port (unicast), "
+        "since it learned the MAC in test #2.",
+        h1.friendly_name,
+        h1.role,
+        h2.friendly_name,
+        h2.role,
+    )
+    h1.send_frame(dst_mac_h2, b"hello phone again")
 
     # --- L2 Extra Test: PC -> Printer (unicast) ---
     dst_mac_h3 = h3.nic.mac
@@ -196,7 +212,7 @@ def activate_l2(sw: Switch, hosts: tuple[EndDevice, EndDevice, EndDevice]) -> No
     )
     h1.send_frame(dst_mac_h3, b"hello printer")
 
-    # <<< NEW: THIS is the line you asked for
+    # <<< NEW: nice high-level flow line
     log.info(
         "• FLOW: %s -> %s",
         h1.role or h1.friendly_name,   # "PC"
@@ -205,6 +221,94 @@ def activate_l2(sw: Switch, hosts: tuple[EndDevice, EndDevice, EndDevice]) -> No
 
     log.info("• L2 testing complete (broadcast + unknown-unicast flooding + MAC learning).")
 
+
+# ---------------------------------------------------------------------------
+# L3: IP + ARP + DHCP
+# ---------------------------------------------------------------------------
+
+def activate_l3(
+    sw: Switch,
+    hosts: tuple[EndDevice, EndDevice, EndDevice],
+    r1: Router,
+    r1_uplink_port,
+) -> None:
+    """
+    PHASE 3: Enable L3.
+    - Configure router LAN interface with IP/mask.
+    - Start DHCP service on router.
+    - Let each host get an IP via DHCP.
+    - Demonstrate ARP + IP unicast PC->Phone and PC->Printer.
+    """
+    log = get_logger("driver")
+    log.info("• === PHASE 3: Activate L3 (Network Layer) ===")
+
+    h1, h2, h3 = hosts  # h1=PC, h2=Phone, h3=Printer
+
+    # Configure router LAN interface (uplink towards the switch)
+    lan_ip = "10.0.0.1"
+    lan_mask = "255.255.255.0"
+    log.info(
+        "• L3: configuring router interface %s with IP %s/%s",
+        getattr(r1_uplink_port, "display_name", getattr(r1_uplink_port, "name", "unknown")),
+        lan_ip,
+        lan_mask,
+    )
+    # Our Router.configure_interface expects the technical port name (e.g. "port1")
+    port_name = getattr(r1_uplink_port, "name", None)
+    if port_name is not None:
+        r1.configure_interface(port_name, lan_ip, lan_mask)
+    else:
+        log.warning("• L3: router uplink port has no 'name', skipping interface IP config")
+
+    # Attach DHCP service on this router
+    log.info(
+        "• L3: attaching DHCP service on router '%s' for network %s/%s",
+        getattr(r1, "friendly_name", r1.name),
+        "10.0.0.0",
+        lan_mask,
+    )
+    pool = DHCPPool(
+        network="10.0.0.0",
+        netmask=lan_mask,
+        gateway=lan_ip,
+        start="10.0.0.10",
+        end="10.0.0.100",
+    )
+    r1.attach_dhcp_service(pool)
+
+    # Each host requests an IP via DHCP
+    log.info("• L3: hosts requesting IP addresses via DHCP...")
+    for host in hosts:
+        log.info(
+            "• DHCP: %s (%s) sending DISCOVER",
+            host.friendly_name,
+            host.role,
+        )
+        host.request_ip_via_dhcp()
+
+    # After DHCP, print resulting IP config
+    log.info("• L3: resulting host IP configurations:")
+    for host in hosts:
+        log.info(
+            "    - %s (%s): IP=%s mask=%s gw=%s [MAC=%s]",
+            host.friendly_name,
+            host.role,
+            getattr(host, "ip_address", None),
+            getattr(host, "netmask", None),
+            getattr(host, "default_gateway", None),
+            host.nic.mac,
+        )
+
+    # Now send IP packets on the LAN (same subnet, so ARP + unicast)
+    log.info("• L3: PC sending IP packet to Phone (same subnet, requires ARP + unicast)...")
+    if getattr(h2, "ip_address", None):
+        h1.send_ip_packet(h2.ip_address, b"L3 hello from PC to Phone")
+
+    log.info("• L3: PC sending IP packet to Printer (same subnet, requires ARP + unicast)...")
+    if getattr(h3, "ip_address", None):
+        h1.send_ip_packet(h3.ip_address, b"L3 hello from PC to Printer")
+
+    log.info("• L3 testing complete (DHCP + ARP + basic IP unicast on a single subnet).")
 
 
 # ---------------------------------------------------------------------------
@@ -216,8 +320,7 @@ def run() -> None:
     log.info("• Starting network demo driver...")
     sw, hosts, r1, r1_uplink_port = activate_l1()
     activate_l2(sw, hosts)
-    # L3 is PAUSED for now:
-    # activate_l3(sw, hosts, r1, r1_uplink_port)
+    activate_l3(sw, hosts, r1, r1_uplink_port)
     log.info("• Demo finished.")
 
 
