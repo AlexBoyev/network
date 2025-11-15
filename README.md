@@ -1,74 +1,114 @@
-
 # Networking Layers Simulator (L1 / L2 / L3)
 
-This project is a **Python-based network simulator** that models how real NICs, switches, and routers behave across OSI Layers 1–3:
+This project is a Python-based home-network simulator that demonstrates OSI Layers 1–3:
 
-- **L1 – Physical:** bits on cables, ports, connectivity  
-- **L2 – Data Link:** Ethernet frames, MAC addressing, switching, flooding  
-- **L3 – Network:** DHCP, ARP, IP routing, subnets, gateway behaviour  
+- L1 – Physical: Cables, ports, NICs
+- L2 – Data Link: Ethernet frames, MAC learning, broadcast/unicast
+- L3 – Network: DHCP, ARP, IP delivery, routing decisions
 
-Everything that happens in the logs is a **slowed-down version of a real LAN**.  
-Your home router + switch + devices perform all these steps in microseconds in hardware; here you see each step clearly.
-
----
-
-# 🖥️ Current Topology
-
-```
-         (L3 Router + DHCP Server)
-                [ Star Pro ]
-             iface: r1-p1
-        MAC: 02:9d:e2:6d:e2:9f
-        IP:  10.0.0.1/24
-                  |
-                  | Star Pro->port1  (router interface)
-                  | Archer AX53->port4 (switch uplink)
-                  |
-        +----------------------------+
-        |   TP-Link Archer AX53     |   (L2 Switch)
-        |   sw1                     |
-        |   no IP (pure L2 device)  |
-        +----------------------------+
-          | p1         | p2         | p3
-          |            |            |
-   host1.nic      host2.nic    host3.nic
- (Alex-PC)       (Phone)       (Printer)
-
-host1 MAC: 02:f9:13:53:c9:30  
-host2 MAC: 02:d2:a7:14:9f:6d  
-host3 MAC: 02:4c:61:c7:77:2f
-```
-
-Subnet: `10.0.0.0/24`  
-Gateway: `10.0.0.1`
+No emojis or special characters are used in this README.
 
 ---
 
-# 🔌 Layer 1 – Physical Layer
-- Cables, ports, power-on, raw bit transmission.
+# Topology (from devices.yaml)
 
-# 🔁 Layer 2 – Data Link Layer (Ethernet)
-- MAC learning  
-- Broadcast flooding  
-- Unknown-unicast flooding  
-- Unicast forwarding  
+Router: home_router (Star Pro)  
+Switches:
+- office_switch (TP-Link Office 4-port)
+- living_room_switch (TP-Link Living Room 4-port)
 
-# 🌐 Layer 3 – Network Layer (IP, ARP, DHCP)
-- DHCP server on router  
-- Hosts get IPs dynamically  
-- ARP resolves IP → MAC  
-- IP unicast delivery  
+End devices:
+- phone_1
+- office_pc
+- printer
+- phone_2
+- tv
+
+Router LAN interfaces:
+
+| Interface | MAC              | IP         | Mask          | DHCP Range            |
+|-----------|------------------|------------|----------------|------------------------|
+| lan1      | 02:aa:aa:aa:10:01 | 10.0.10.1  | 255.255.255.0 | 10.0.10.100–10.0.10.200 |
+| lan2      | 02:aa:aa:aa:20:01 | 10.0.20.1  | 255.255.255.0 | 10.0.20.100–10.0.20.200 |
+| lan3      | 02:aa:aa:aa:30:01 | 10.0.30.1  | 255.255.255.0 | (unused)               |
+| lan4      | 02:aa:aa:aa:40:01 | 10.0.40.1  | 255.255.255.0 | (unused)               |
 
 ---
 
+# Topology Diagram (ASCII Only)
 
-# 🌍 WAN Interface (Future Feature)
-Currently only LAN side exists.  
-Future: add second router interface + default route + ISP simulation + NAT.
+```
+                 Home Router (Star Pro)
+           +----------------------------------+
+           | lan1: 10.0.10.1/24 (Office LAN)  |
+           | lan2: 10.0.20.1/24 (Living LAN)  |
+           +--------------+-------------------+
+                          |                   
+                          |                   
+                (Router port1)         (Router port2)
+                          |                   |
+                          |                   |
+        Office Switch (L2 Only)      Living Room Switch (L2 Only)
+        +--------+--------+--------+    +--------+--------+--------+
+        | p1     | p2     | p3     |    | p1     | p2     | p3     |
+        | uplink | phone_1| office |    | uplink | phone_2|  tv    |
+        |        |        |  pc    |    |        |        |        |
+        +--------+--------+--------+    +--------+--------+--------+
+                  p4: printer                  p4: (unused)
+```
+
+Both switches connect directly to the router, not to each other.
 
 ---
 
-# ▶️ Running
+# Simulation Flow (Driver)
+
+1. Phase 1: Build L1  
+   - Create cables, NICs, ports  
+   - Apply MAC addresses from YAML  
+   - Connect all links
+
+2. Phase 2: Power on devices  
+   - Router, switches, end devices turned ON
+
+3. Phase 3: Enable L2 switching  
+   - MAC learning  
+   - Flooding for unknown unicast and broadcast  
+   - Unicast when MAC is known
+
+4. Phase 4: Configure router L3 interfaces  
+   - Assign IP, masks  
+   - Build connected routes  
+   - Initialize ARP tables
+
+5. Phase 5: Attach DHCP on lan1  
+   - Pool: 10.0.10.100–10.0.10.200
+
+6. Phase 6: DHCP Assignment  
+   - phone_1 → 10.0.10.100  
+   - office_pc → 10.0.10.101  
+   - printer → 10.0.10.102  
+
+7. Phase 7: ARP + L3 Delivery  
+   - office_pc ARPs for printer  
+   - Printer replies with ARP Reply  
+   - office_pc sends IP packet to printer  
+   - Printer receives and logs it
+
+---
+
+# Run
+
 ```
-python driver.py
+python -m network.driver
 ```
+
+---
+
+# Future Improvements
+
+- DHCP on LAN2  
+- Inter-subnet routing example  
+- ICMP ping simulation  
+- NAT example  
+
