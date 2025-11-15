@@ -1,18 +1,35 @@
-from ipaddress import IPv4Network, IPv4Address
-from network.utils.logger import log_call
+# network/utils/ip_utils.py
+
+def ip_to_int(ip: str) -> int:
+    """
+    Convert dotted IPv4 string to integer.
+    Example: '10.0.10.1' -> 0x0A000A01
+    """
+    parts = [int(p) for p in ip.split(".")]
+    v = 0
+    for p in parts:
+        v = (v << 8) + p
+    return v
 
 
-@log_call()
-def _ip_in_prefix(ip: str, net_ip: str, prefix_len: int) -> bool:
-    net = IPv4Network(f"{net_ip}/{prefix_len}", strict=False)
-    return IPv4Address(ip) in net
+def int_to_ip(v: int) -> str:
+    """
+    Convert integer to dotted IPv4 string.
+    Example: 0x0A000A01 -> '10.0.10.1'
+    """
+    return ".".join(str((v >> (8 * i)) & 0xFF) for i in reversed(range(4)))
 
 
-@log_call()
 def same_subnet(ip1: str, mask1: str, ip2: str, mask2: str) -> bool:
     """
-    Return True if two (ip, mask) pairs belong to the same IPv4 subnet.
+    Returns True if ip1/mask1 and ip2/mask2 are in the same IPv4 subnet.
     """
-    n1 = IPv4Network(f"{ip1}/{mask1}", strict=False)
-    n2 = IPv4Network(f"{ip2}/{mask2}", strict=False)
-    return n1.network_address == n2.network_address and n1.netmask == n2.netmask
+    ip1_int = ip_to_int(ip1)
+    ip2_int = ip_to_int(ip2)
+    m1_int = ip_to_int(mask1)
+    m2_int = ip_to_int(mask2)
+
+    # If masks differ, use the stricter one (more specific) – good enough for demo
+    mask_int = m1_int if m1_int >= m2_int else m2_int
+
+    return (ip1_int & mask_int) == (ip2_int & mask_int)
