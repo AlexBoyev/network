@@ -1,328 +1,261 @@
 from __future__ import annotations
 
-from pathlib import Path
-import yaml
+import time
 
-from network.utils.logger import get_logger
 from network.components.cable import Cable
-from network.devices.end_device import EndDevice
 from network.devices.switch import Switch
 from network.devices.router import Router
+from network.devices.end_device import EndDevice
 from network.services.dhcp import DHCPPool
+from network.utils.config_loader import load_device_config
+from network.utils.logger import get_logger
 
 
-# ---------------------------------------------------------------------------
-# Config loader (YAML)
-# ---------------------------------------------------------------------------
+log = get_logger("netdemo.driver")
 
-def load_device_config() -> dict:
+
+def _apply_router_metadata_from_yaml(router: Router, router_cfg: dict) -> None:
     """
-    Load device metadata (roles, friendly names, models, etc.) from YAML.
-
-    Expected path: network/config/devices.yaml (relative to this driver.py).
+    Set friendly_name/model from YAML.
+    Interface-specific stuff (MAC/IP/DHCP) is applied later
+    when we know which port is lan1/lan2 etc.
     """
-    config_path = Path(__file__).resolve().parent / "config" / "devices.yaml"
-    with config_path.open("r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+    router.friendly_name = router_cfg.get("friendly_name", router.name)
+    router.model = router_cfg.get("model")
 
 
-# ---------------------------------------------------------------------------
-# L1: build topology + raw signals
-# ---------------------------------------------------------------------------
+def _apply_switch_metadata_from_yaml(sw: Switch, sw_cfg: dict) -> None:
+    sw.friendly_name = sw_cfg.get("friendly_name", sw.name)
+    sw.model = sw_cfg.get("model")
 
-def activate_l1():
+
+def _apply_enddevice_metadata_from_yaml(dev: EndDevice, dev_cfg: dict) -> None:
+    dev.role = dev_cfg.get("role", dev.role)
+    dev.friendly_name = dev_cfg.get("friendly_name", dev.friendly_name)
+    dev.model = dev_cfg.get("model", dev.model)
+
+    mac = dev_cfg.get("mac")
+    if mac:
+        dev.nic.mac = mac
+        dev.log.info("• L2 config: overriding NIC MAC to %s from YAML", mac)
+
+
+def _ip_to_int(ip: str) -> int:
+    parts = [int(p) for p in ip.split(".")]
+    v = 0
+    for p in parts:
+        v = (v << 8) + p
+    return v
+
+
+def _int_to_ip(v: int) -> str:
+    return ".".join(str((v >> (8 * i)) & 0xFF) for i in reversed(range(4)))
+
+
+def build_topology():
     """
-    PHASE 1: Build topology, power devices, and test L1 (raw bits only).
-    Returns objects so we can continue with L2 (and L3 in the future).
+    Build the full topology according to devices.yaml:
+
+      home_router.lan1 -> office_switch.wan
+      home_router.lan2 -> living_room_switch.wan
+
+      office_switch.lan1 -> phone_1
+      office_switch.lan2 -> office_pc
+      office_switch.lan3 -> printer
+
+      living_room_switch.lan1 -> phone_2
+      living_room_switch.lan2 -> tv
     """
-    log = get_logger("driver")
+    log.info("• • Starting network demo driver...")
+    log.info("• • === PHASE 1: Load config & build L1 topology ===")
+
     cfg = load_device_config()
 
-    log.info("• === PHASE 1: Activate L1 (Physical Layer) ===")
+    # ---------- Router ----------
+    router_cfg = cfg["router"]
+    router = Router(router_cfg["name"])
+    _apply_router_metadata_from_yaml(router, router_cfg)
 
-    # --- Topology: 3 hosts + switch + router uplink ---
-    log.info("• Building topology (cables, switch, hosts, router)...")
-    c1 = Cable()
-    c2 = Cable()
-    c3 = Cable()
-    cu = Cable()  # uplink to router
+    # ---------- Switches ----------
+    switches_cfg = cfg.get("switches", {})
+    office_sw_cfg = switches_cfg.get("office_switch", {})
+    living_sw_cfg = switches_cfg.get("living_room_switch", {})
 
-    # SWITCH
-    sw_cfg = cfg["switch"]
-    sw = Switch(sw_cfg["name"])  # internal name, e.g. "sw1"
-    # attach some friendly metadata (Python will happily allow new attrs)
-    sw.friendly_name = sw_cfg.get("friendly_name", sw_cfg["name"])
-    sw.model = sw_cfg.get("model", "")
+    office_switch = Switch("office_switch")
+    _apply_switch_metadata_from_yaml(office_switch, office_sw_cfg)
 
-    sw.add_port(c1)   # sw1-p1
-    sw.add_port(c2)   # sw1-p2
-    sw.add_port(c3)   # sw1-p3
-    sw.add_port(cu)   # sw1-p4 (uplink to router)
+    living_switch = Switch("living_room_switch")
+    _apply_switch_metadata_from_yaml(living_switch, living_sw_cfg)
 
-    # END DEVICES (hosts)
-    ed_cfg = cfg["enddevices"]
+    # ---------- Cables: router <-> switches ----------
+    # Router lan1 <-> office_switch wan
+    cable_r_office = Cable()
+    r_port_lan1 = router.add_port(cable_r_office)
+    sw_office_wan_port = office_switch.add_port(cable_r_office)
 
-    # host1 = PC
-    h1 = EndDevice("host1", c1)
-    h1.role = ed_cfg["host1"].get("role", "EndDevice")
-    h1.friendly_name = ed_cfg["host1"].get("friendly_name", "host1")
-    h1.model = ed_cfg["host1"].get("model")
+    # Router lan2 <-> living_room_switch wan
+    cable_r_living = Cable()
+    r_port_lan2 = router.add_port(cable_r_living)
+    sw_living_wan_port = living_switch.add_port(cable_r_living)
 
-    # host2 = Phone
-    h2 = EndDevice("host2", c2)
-    h2.role = ed_cfg["host2"].get("role", "EndDevice")
-    h2.friendly_name = ed_cfg["host2"].get("friendly_name", "host2")
-    h2.model = ed_cfg["host2"].get("model")
+    # ---------- End devices on office_switch ----------
+    end_cfg = cfg["enddevices"]
 
-    # host3 = Printer
-    h3 = EndDevice("host3", c3)
-    h3.role = ed_cfg["host3"].get("role", "EndDevice")
-    h3.friendly_name = ed_cfg["host3"].get("friendly_name", "host3")
-    h3.model = ed_cfg["host3"].get("model")
+    cable_phone_1 = Cable()
+    sw_office_lan1 = office_switch.add_port(cable_phone_1)
+    phone_1 = EndDevice("phone_1", cable_phone_1)
+    _apply_enddevice_metadata_from_yaml(phone_1, end_cfg["phone_1"])
 
-    # ROUTER
-    r_cfg = cfg["router"]
-    r1 = Router(r_cfg["name"])
-    r1.friendly_name = r_cfg.get("friendly_name", r_cfg["name"])
-    r1.model = r_cfg.get("model")
-    r1_uplink_port = r1.add_port(cu)   # r1-p1
+    cable_office_pc = Cable()
+    sw_office_lan2 = office_switch.add_port(cable_office_pc)
+    office_pc = EndDevice("office_pc", cable_office_pc)
+    _apply_enddevice_metadata_from_yaml(office_pc, end_cfg["office_pc"])
 
-    # --- Power on devices ---
-    log.info("• Powering on all devices...")
-    for d in (h1, h2, h3, sw, r1):
-        d.turn_on()
+    cable_printer = Cable()
+    sw_office_lan3 = office_switch.add_port(cable_printer)
+    printer = EndDevice("printer", cable_printer)
+    _apply_enddevice_metadata_from_yaml(printer, end_cfg["printer"])
 
-    # --- Human-readable summary of the lab ---
-    log.info(
-        "• Device roles:\n"
-        "    - host1: %s (%s, model=%s)\n"
-        "    - host2: %s (%s, model=%s)\n"
-        "    - host3: %s (%s, model=%s)\n"
-        "    - switch: %s (model=%s)\n"
-        "    - router: %s (model=%s)",
-        h1.friendly_name, h1.role, h1.model,
-        h2.friendly_name, h2.role, h2.model,
-        h3.friendly_name, h3.role, h3.model,
-        sw.friendly_name, sw.model,
-        r1.friendly_name, r1.model,
-    )
+    # ---------- End devices on living_room_switch ----------
+    cable_phone_2 = Cable()
+    sw_living_lan1 = living_switch.add_port(cable_phone_2)
+    phone_2 = EndDevice("phone_2", cable_phone_2)
+    _apply_enddevice_metadata_from_yaml(phone_2, end_cfg["phone_2"])
 
-    # --- L1 signal tests: raw bits, no L2 yet ---
-    log.info("• Sending raw L1 signals from PC / Phone / Printer NICs to the switch...")
-    h1.send_bits(b"L1 raw test from PC")
-    h2.send_bits(b"L1 raw test from Phone")
-    h3.send_bits(b"L1 raw test from Printer")
+    cable_tv = Cable()
+    sw_living_lan2 = living_switch.add_port(cable_tv)
+    tv = EndDevice("tv", cable_tv)
+    _apply_enddevice_metadata_from_yaml(tv, end_cfg["tv"])
 
-    log.info(
-        "• L1 summary: switch '%s' online with 4 ports (p1..p4), "
-        "%s on p1, %s on p2, %s on p3, router uplink on p4; "
-        "all devices ON; raw signals observed at sw1 ports; "
-        "no L2 forwarding yet (stays at physical layer).",
-        sw.friendly_name,
-        h1.friendly_name,
-        h2.friendly_name,
-        h3.friendly_name,
-    )
+    # ---------- Power ON devices ----------
+    log.info("• • === PHASE 2: Power on devices (L1 ready) ===")
+    router.turn_on()
+    office_switch.turn_on()
+    living_switch.turn_on()
 
-    return sw, (h1, h2, h3), r1, r1_uplink_port
+    for dev in (phone_1, office_pc, printer, phone_2, tv):
+        dev.turn_on()
 
+    # ---------- L2: enable switching ----------
+    log.info("• • === PHASE 3: Enable L2 switching on all switches ===")
+    # IMPORTANT: your Switch.enable_l2 requires 'enabled' argument
+    office_switch.enable_l2(True)
+    living_switch.enable_l2(True)
 
-# ---------------------------------------------------------------------------
-# L2: enable switching + MAC learning + flooding
-# ---------------------------------------------------------------------------
+    # ---------- L3: configure router interfaces (static from YAML) ----------
+    log.info("• • === PHASE 4: Configure router L3 interfaces from YAML ===")
 
-def activate_l2(sw: Switch, hosts: tuple[EndDevice, EndDevice, EndDevice]) -> None:
-    """
-    PHASE 2: Enable L2 on the switch and demonstrate MAC learning + flooding.
-    Router also participates at L1/L2, but no IP/ARP routing is active yet.
-    """
-    log = get_logger("driver")
-    log.info("• === PHASE 2: Activate L2 (Data Link Layer) ===")
+    iface_cfg = router_cfg.get("interfaces", {})
 
-    h1, h2, h3 = hosts  # h1=PC, h2=Phone, h3=Printer
+    # Map router technical port names to logical YAML interfaces.
+    # We know from the order we wired:
+    #   r_port_lan1 -> lan1
+    #   r_port_lan2 -> lan2
+    port_to_iface_name = {
+        r_port_lan1.name: "lan1",
+        r_port_lan2.name: "lan2",
+        # lan3/lan4 exist in YAML but are unused (no cables) in this topology
+    }
 
-    log.info(
-        "• Enabling L2 on switch '%s' (MAC learning & flooding)...",
-        getattr(sw, "friendly_name", sw.name),
-    )
-    sw.enable_l2(True)
+    for port_name, iface_name in port_to_iface_name.items():
+        iface_yaml = iface_cfg.get(iface_name)
+        if not iface_yaml:
+            log.warning("Router YAML has no config for interface %s", iface_name)
+            continue
 
-    # --- L2 Test 1: Broadcast (like ARP request) ---
-    broadcast = "ff:ff:ff:ff:ff:ff"
-    log.info(
-        "• L2 test #1: %s (%s) broadcasts 'who-is-everyone?' to the LAN "
-        "(dst=%s, src MAC=%s)",
-        h1.friendly_name,
-        h1.role,
-        broadcast,
-        h1.nic.mac,
-    )
-    h1.send_frame(broadcast, b"who-is-everyone?")
+        iface = router.interfaces.get(port_name)
+        if iface is None:
+            log.error("Router %s: no interface for port %s", router.name, port_name)
+            continue
 
-    # Optional: high-level flow line for the broadcast
-    log.info("• FLOW: %s (%s) -> ALL DEVICES (broadcast)", h1.friendly_name, h1.role)
+        # Override interface MAC from YAML
+        mac_from_yaml = iface_yaml.get("mac")
+        if mac_from_yaml:
+            iface.mac = mac_from_yaml
+            router._log.info(
+                "Router %s: overriding MAC on %s (%s) to %s from YAML",
+                getattr(router, "friendly_name", router.name),
+                port_name,
+                iface.name,
+                mac_from_yaml,
+            )
 
-    # --- L2 Test 2: PC -> Phone (unicast; switch floods first time) ---
-    dst_mac_h2 = h2.nic.mac
-    log.info(
-        "• L2 test #2: %s (%s) sends 'hello phone' to %s (%s) "
-        "[src MAC=%s -> dst MAC=%s]. "
-        "First time, switch doesn't know the phone MAC yet, "
-        "so it will FLOOD the frame to all ports except the incoming one.",
-        h1.friendly_name,
-        h1.role,
-        h2.friendly_name,
-        h2.role,
-        h1.nic.mac,
-        dst_mac_h2,
-    )
-    h1.send_frame(dst_mac_h2, b"hello phone")
+        ip = iface_yaml.get("ip")
+        netmask = iface_yaml.get("netmask")
+        if ip and netmask:
+            router.configure_interface(port_name, ip, netmask)
 
-    # Optional: summarize MAC learning after first unicast
-    log.info(
-        "• After first unicast, switch MAC table should now know where "
-        "PC (%s) and Phone (%s) live.",
-        h1.nic.mac,
-        h2.nic.mac,
-    )
+    # ---------- L3: attach DHCP (for lan1 only, with current DHCPService) ----------
+    log.info("• • === PHASE 5: Attach DHCP service for Office LAN (lan1) ===")
 
-    # --- L2 Test 3: PC -> Phone again (now switch should unicast) ---
-    log.info(
-        "• L2 test #3: %s (%s) sends another 'hello phone' to %s (%s). "
-        "Now the switch SHOULD forward only to the correct port (unicast), "
-        "since it learned the MAC in test #2.",
-        h1.friendly_name,
-        h1.role,
-        h2.friendly_name,
-        h2.role,
-    )
-    h1.send_frame(dst_mac_h2, b"hello phone again")
+    lan1_cfg = iface_cfg.get("lan1")
+    if lan1_cfg:
+        gw_ip = lan1_cfg["ip"]
+        netmask = lan1_cfg["netmask"]
+        dhcp_start = lan1_cfg["dhcp_start"]
+        dhcp_end = lan1_cfg["dhcp_end"]
 
-    # --- L2 Extra Test: PC -> Printer (unicast) ---
-    dst_mac_h3 = h3.nic.mac
-    log.info(
-        "• L2 extra: %s (%s) sends 'hello printer' to %s (%s) "
-        "[src MAC=%s -> dst MAC=%s]",
-        h1.friendly_name,
-        h1.role,
-        h3.friendly_name,
-        h3.role,
-        h1.nic.mac,
-        dst_mac_h3,
-    )
-    h1.send_frame(dst_mac_h3, b"hello printer")
+        ip_int = _ip_to_int(gw_ip)
+        mask_int = _ip_to_int(netmask)
+        network_int = ip_int & mask_int
+        network_str = _int_to_ip(network_int)
 
-    # <<< NEW: nice high-level flow line
-    log.info(
-        "• FLOW: %s -> %s",
-        h1.role or h1.friendly_name,   # "PC"
-        h3.role or h3.friendly_name,   # "Printer"
-    )
-
-    log.info("• L2 testing complete (broadcast + unknown-unicast flooding + MAC learning).")
-
-
-# ---------------------------------------------------------------------------
-# L3: IP + ARP + DHCP
-# ---------------------------------------------------------------------------
-
-def activate_l3(
-    sw: Switch,
-    hosts: tuple[EndDevice, EndDevice, EndDevice],
-    r1: Router,
-    r1_uplink_port,
-) -> None:
-    """
-    PHASE 3: Enable L3.
-    - Configure router LAN interface with IP/mask.
-    - Start DHCP service on router.
-    - Let each host get an IP via DHCP.
-    - Demonstrate ARP + IP unicast PC->Phone and PC->Printer.
-    """
-    log = get_logger("driver")
-    log.info("• === PHASE 3: Activate L3 (Network Layer) ===")
-
-    h1, h2, h3 = hosts  # h1=PC, h2=Phone, h3=Printer
-
-    # Configure router LAN interface (uplink towards the switch)
-    lan_ip = "10.0.0.1"
-    lan_mask = "255.255.255.0"
-    log.info(
-        "• L3: configuring router interface %s with IP %s/%s",
-        getattr(r1_uplink_port, "display_name", getattr(r1_uplink_port, "name", "unknown")),
-        lan_ip,
-        lan_mask,
-    )
-    # Our Router.configure_interface expects the technical port name (e.g. "port1")
-    port_name = getattr(r1_uplink_port, "name", None)
-    if port_name is not None:
-        r1.configure_interface(port_name, lan_ip, lan_mask)
+        pool = DHCPPool(
+            network=network_str,
+            netmask=netmask,
+            gateway=gw_ip,
+            start=dhcp_start,
+            end=dhcp_end,
+        )
+        router.attach_dhcp_service(pool)
     else:
-        log.warning("• L3: router uplink port has no 'name', skipping interface IP config")
+        log.warning("No lan1 config found in router YAML; DHCP not attached")
 
-    # Attach DHCP service on this router
-    log.info(
-        "• L3: attaching DHCP service on router '%s' for network %s/%s",
-        getattr(r1, "friendly_name", r1.name),
-        "10.0.0.0",
-        lan_mask,
-    )
-    pool = DHCPPool(
-        network="10.0.0.0",
-        netmask=lan_mask,
-        gateway=lan_ip,
-        start="10.0.0.10",
-        end="10.0.0.100",
-    )
-    r1.attach_dhcp_service(pool)
+    topology = {
+        "router": router,
+        "office_switch": office_switch,
+        "living_switch": living_switch,
+        "devices": {
+            "phone_1": phone_1,
+            "office_pc": office_pc,
+            "printer": printer,
+            "phone_2": phone_2,
+            "tv": tv,
+        },
+    }
+    return topology
 
-    # Each host requests an IP via DHCP
-    log.info("• L3: hosts requesting IP addresses via DHCP...")
-    for host in hosts:
-        log.info(
-            "• DHCP: %s (%s) sending DISCOVER",
-            host.friendly_name,
-            host.role,
+
+def simple_l3_demo(topology: dict) -> None:
+    """
+    Small L3 demo:
+      - Office devices obtain IP via DHCP (lan1 / 10.0.10.x).
+      - Office PC sends an IP packet to printer.
+    """
+    devices = topology["devices"]
+    phone_1 = devices["phone_1"]
+    office_pc = devices["office_pc"]
+    printer = devices["printer"]
+
+    log.info("• • === PHASE 6: DHCP for Office LAN devices (lan1 only) ===")
+    for dev in (phone_1, office_pc, printer):
+        dev.request_ip_via_dhcp()
+        time.sleep(0.1)
+
+    log.info("• • === PHASE 7: L3 test — office_pc -> printer ===")
+    if printer.ip_address:
+        office_pc.send_ip_packet(
+            printer.ip_address,
+            b"Hello from office_pc to printer",
         )
-        host.request_ip_via_dhcp()
-
-    # After DHCP, print resulting IP config
-    log.info("• L3: resulting host IP configurations:")
-    for host in hosts:
-        log.info(
-            "    - %s (%s): IP=%s mask=%s gw=%s [MAC=%s]",
-            host.friendly_name,
-            host.role,
-            getattr(host, "ip_address", None),
-            getattr(host, "netmask", None),
-            getattr(host, "default_gateway", None),
-            host.nic.mac,
-        )
-
-    # Now send IP packets on the LAN (same subnet, so ARP + unicast)
-    log.info("• L3: PC sending IP packet to Phone (same subnet, requires ARP + unicast)...")
-    if getattr(h2, "ip_address", None):
-        h1.send_ip_packet(h2.ip_address, b"L3 hello from PC to Phone")
-
-    log.info("• L3: PC sending IP packet to Printer (same subnet, requires ARP + unicast)...")
-    if getattr(h3, "ip_address", None):
-        h1.send_ip_packet(h3.ip_address, b"L3 hello from PC to Printer")
-
-    log.info("• L3 testing complete (DHCP + ARP + basic IP unicast on a single subnet).")
+    else:
+        log.warning("Printer has no IP yet; skipping L3 send test")
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
-def run() -> None:
-    log = get_logger("driver")
-    log.info("• Starting network demo driver...")
-    sw, hosts, r1, r1_uplink_port = activate_l1()
-    activate_l2(sw, hosts)
-    activate_l3(sw, hosts, r1, r1_uplink_port)
-    log.info("• Demo finished.")
+def main() -> None:
+    topology = build_topology()
+    simple_l3_demo(topology)
 
 
 if __name__ == "__main__":
-    run()
+    main()

@@ -1,23 +1,100 @@
-switch:
-  name: sw1
-  friendly_name: "TP-Link Archer AX53"
-  model: "Archer AX53"
-
 router:
-  name: r1
-  friendly_name: "Star Pro"
+  name: home_router
+  friendly_name: "Home Router"
   model: "Star Pro"
 
+  interfaces:
+    wan:
+      mac: "02:aa:aa:aa:00:01"
+
+    lan1:
+      mac: "02:aa:aa:aa:10:01"
+      ip: "10.0.10.1"
+      netmask: "255.255.255.0"
+      dhcp_start: "10.0.10.100"
+      dhcp_end: "10.0.10.200"
+
+    lan2:
+      mac: "02:aa:aa:aa:20:01"
+      ip: "10.0.20.1"
+      netmask: "255.255.255.0"
+      dhcp_start: "10.0.20.100"
+      dhcp_end: "10.0.20.200"
+
+    lan3:
+      mac: "02:aa:aa:aa:30:01"
+      ip: "10.0.30.1"
+      netmask: "255.255.255.0"
+      dhcp_start: "10.0.30.100"
+      dhcp_end: "10.0.30.200"
+
+    lan4:
+      mac: "02:aa:aa:aa:40:01"
+      ip: "10.0.40.1"
+      netmask: "255.255.255.0"
+      dhcp_start: "10.0.40.100"
+      dhcp_end: "10.0.40.200"
+
+
+switches:
+  office_switch:
+    friendly_name: "Office Switch"
+    model: "TP-Link Office 4-port"
+    ports:
+      wan:
+        mac: "02:bb:10:00:00:01"
+      lan1:
+        mac: "02:bb:10:00:00:11"
+      lan2:
+        mac: "02:bb:10:00:00:12"
+      lan3:
+        mac: "02:bb:10:00:00:13"
+      lan4:
+        mac: "02:bb:10:00:00:14"
+
+  living_room_switch:
+    friendly_name: "Living Room Switch"
+    model: "TP-Link Living Room 4-port"
+    ports:
+      wan:
+        mac: "02:bb:20:00:00:01"
+      lan1:
+        mac: "02:bb:20:00:00:11"
+      lan2:
+        mac: "02:bb:20:00:00:12"
+      lan3:
+        mac: "02:bb:20:00:00:13"
+      lan4:
+        mac: "02:bb:20:00:00:14"
+
+
 enddevices:
-  host1:
-    role: "PC"
-    friendly_name: "Alex-PC"
-    model: "Some Gaming PC"
-  host2:
+  phone_1:
     role: "Phone"
-    friendly_name: "Samsung Galaxy S24"
-    model: "Galaxy S24"
-  host3:
+    friendly_name: "Office Phone"
+    model: "Desk IP Phone"
+    mac: "02:cc:10:00:00:10"
+
+  office_pc:
+    role: "PC"
+    friendly_name: "Office PC"
+    model: "Some Gaming PC"
+    mac: "02:cc:10:00:00:20"
+
+  printer:
     role: "Printer"
-    friendly_name: "HP LaserJet Pro M404"
-    model: "LaserJet M404"
+    friendly_name: "Office Printer"
+    model: "HP LaserJet Pro M404"
+    mac: "02:cc:10:00:00:30"
+
+  phone_2:
+    role: "Phone"
+    friendly_name: "Living Room Phone"
+    model: "Samsung Galaxy S24"
+    mac: "02:cc:20:00:00:10"
+
+  tv:
+    role: "TV"
+    friendly_name: "Living Room TV"
+    model: "Smart TV"
+    mac: "02:cc:20:00:00:20"
