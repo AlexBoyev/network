@@ -39,7 +39,7 @@ def build_topology(cfg: dict) -> dict:
       living_room_switch.lan1 -> phone_2
       living_room_switch.lan2 -> tv
     """
-    LOG.info("• • • • • • • • Building L1 topology (router, switches, NICs, cables)...")
+    LOG.info("• • • • • • • • • Building L1 topology (router, switches, NICs, cables)...")
 
     # ---------- Router ----------
     router_cfg = cfg["router"]
@@ -114,7 +114,7 @@ def build_topology(cfg: dict) -> dict:
     }
 
     LOG.info(
-        "• • • • • • • • L1 topology built successfully: router=%s, switches=[%s,%s], devices=%d",
+        "• • • • • • • • • L1 topology built successfully: router=%s, switches=[%s,%s], devices=%d",
         getattr(router, "friendly_name", router_cfg["name"]),
         getattr(office_switch, "friendly_name", "office_switch"),
         getattr(living_switch, "friendly_name", "living_room_switch"),
@@ -142,11 +142,11 @@ def start_l1() -> Tuple[dict, dict]:
       - Build topology (router, switches, devices, cables)
       - Power ON everything
     """
-    LOG.info("• • • • • • • • === PHASE 1: Load config & build L1 topology ===")
+    LOG.info("• • • • • • • • • === PHASE 1: Load config & build L1 topology ===")
     cfg = load_device_config()
     topology = build_topology(cfg)
 
-    LOG.info("• • • • • • • • === PHASE 2: Power on devices (L1 ready) ===")
+    LOG.info("• • • • • • • • • === PHASE 2: Power on devices (L1 ready) ===")
     router: Router = topology["router"]
     office_switch: Switch = topology["office_switch"]
     living_switch: Switch = topology["living_switch"]
@@ -158,7 +158,7 @@ def start_l1() -> Tuple[dict, dict]:
     for dev in devices.values():
         dev.turn_on()
 
-    LOG.info("• • • • • • • • L1 phase complete: physical connectivity + power are up.")
+    LOG.info("• • • • • • • • • L1 phase complete: physical connectivity + power are up.")
     return cfg, topology
 
 
@@ -172,17 +172,16 @@ def start_l2(topology: dict) -> None:
       - Enable L2 switching on all switches
       - MAC learning + flooding/unicast become active
     """
-    LOG.info("• • • • • • • • === PHASE 3: Enable L2 switching on all switches ===")
+    LOG.info("• • • • • • • • • === PHASE 3: Enable L2 switching on all switches ===")
 
     office_switch: Switch = topology["office_switch"]
     living_switch: Switch = topology["living_switch"]
 
-    # IMPORTANT: your Switch.enable_l2 requires 'enabled' argument
     office_switch.enable_l2(True)
     living_switch.enable_l2(True)
 
     LOG.info(
-        "• • • • • • • • L2 phase complete: %s and %s now perform MAC learning and "
+        "• • • • • • • • • L2 phase complete: %s and %s now perform MAC learning and "
         "broadcast/unicast forwarding.",
         getattr(office_switch, "friendly_name", office_switch.name),
         getattr(living_switch, "friendly_name", living_switch.name),
@@ -193,12 +192,61 @@ def start_l2(topology: dict) -> None:
 # PHASE 4–7: L3 setup + DHCP + demo
 # ---------------------------------------------------------------------------
 
+def _attach_dhcp_for_interface(
+    router: Router,
+    interfaces_cfg: dict,
+    logical_name: str,
+) -> None:
+    """
+    Helper: if the given logical interface has DHCP config in YAML, attach a DHCPPool
+    for that subnet to the router.
+    """
+    iface_cfg = interfaces_cfg.get(logical_name)
+    if not iface_cfg:
+        return
+
+    gw_ip = iface_cfg.get("ip")
+    netmask = iface_cfg.get("netmask")
+    dhcp_start = iface_cfg.get("dhcp_start")
+    dhcp_end = iface_cfg.get("dhcp_end")
+
+    if not (gw_ip and netmask and dhcp_start and dhcp_end):
+        return
+
+    ip_int = ip_to_int(gw_ip)
+    mask_int = ip_to_int(netmask)
+    network_int = ip_int & mask_int
+    network_str = int_to_ip(network_int)
+
+    pool = DHCPPool(
+        network=network_str,
+        netmask=netmask,
+        gateway=gw_ip,
+        start=dhcp_start,
+        end=dhcp_end,
+    )
+    router.attach_dhcp_service(pool)
+    LOG.info(
+        "Router %s: DHCP attached for %s network=%s mask=%s range=%s-%s",
+        getattr(router, "friendly_name", router.name),
+        logical_name,
+        network_str,
+        netmask,
+        dhcp_start,
+        dhcp_end,
+    )
+
+
 def start_l3(cfg: dict, topology: dict) -> None:
     """
     Phase L3:
-      - Configure router L3 interfaces from YAML
-      - Attach DHCP pool/service for Office LAN (lan1)
-      - DHCP for Office LAN devices
+      - Configure router L3 interfaces from YAML (lan1 and lan2 in this topology)
+      - Attach DHCP pools for:
+          * Office LAN (lan1, 10.0.10.0/24)
+          * Living Room LAN (lan2, 10.0.20.0/24)
+      - DHCP for all LAN devices:
+          * lan1: phone_1, office_pc, printer
+          * lan2: phone_2, tv
       - ARP + IP unicast demo: office_pc -> printer
     """
     router: Router = topology["router"]
@@ -208,7 +256,7 @@ def start_l3(cfg: dict, topology: dict) -> None:
     router_cfg = cfg["router"]
     interfaces_cfg = router_cfg.get("interfaces", {})
 
-    LOG.info("• • • • • • • • === PHASE 4: Configure router L3 interfaces from YAML ===")
+    LOG.info("• • • • • • • • • === PHASE 4: Configure router L3 interfaces from YAML ===")
     rlog = getattr(router, "_log", LOG)
 
     # Configure lan1 / lan2 based on the ports we wired in build_topology()
@@ -251,40 +299,23 @@ def start_l3(cfg: dict, topology: dict) -> None:
                 netmask,
             )
 
-    # ---------- DHCP attach (lan1) ----------
-    LOG.info("• • • • • • • • === PHASE 5: Attach DHCP service for Office LAN (lan1) ===")
+    # ---------- DHCP attach (lan1 + lan2) ----------
+    LOG.info("• • • • • • • • • === PHASE 5: Attach DHCP services for LANs (lan1, lan2) ===")
 
-    lan1_cfg = interfaces_cfg.get("lan1")
-    if not lan1_cfg:
-        LOG.warning("No lan1 config found in router YAML; DHCP not attached")
-        return
+    # Office LAN (10.0.10.0/24)
+    _attach_dhcp_for_interface(router, interfaces_cfg, "lan1")
+    # Living Room LAN (10.0.20.0/24)
+    _attach_dhcp_for_interface(router, interfaces_cfg, "lan2")
 
-    gw_ip = lan1_cfg["ip"]
-    netmask = lan1_cfg["netmask"]
-    dhcp_start = lan1_cfg["dhcp_start"]
-    dhcp_end = lan1_cfg["dhcp_end"]
+    # ---------- DHCP for all LAN devices ----------
+    LOG.info("• • • • • • • • • === PHASE 6: DHCP for Office + Living Room LAN devices ===")
+    dhcp_clients = ("phone_1", "office_pc", "printer", "phone_2", "tv")
 
-    ip_int = ip_to_int(gw_ip)
-    mask_int = ip_to_int(netmask)
-    network_int = ip_int & mask_int
-    network_str = int_to_ip(network_int)
-
-    pool = DHCPPool(
-        network=network_str,
-        netmask=netmask,
-        gateway=gw_ip,
-        start=dhcp_start,
-        end=dhcp_end,
-    )
-    router.attach_dhcp_service(pool)
-
-    # ---------- DHCP for office devices ----------
-    LOG.info("• • • • • • • • === PHASE 6: DHCP for Office LAN devices (lan1 only) ===")
-    for name in ("phone_1", "office_pc", "printer"):
+    for name in dhcp_clients:
         dev = devices.get(name)
         if not dev:
             LOG.warning(
-                "• • • • • • • • DHCP phase: device '%s' not found in topology; skipping DHCP for it",
+                "• • • • • • • • • DHCP phase: device '%s' not found in topology; skipping DHCP for it",
                 name,
             )
             continue
@@ -294,21 +325,21 @@ def start_l3(cfg: dict, topology: dict) -> None:
             dev.friendly_name,
             dev.role,
         )
-        # IMPORTANT: match your existing EndDevice API
         dev.request_ip_via_dhcp()
 
     LOG.info(
-        "• • • • • • • • DHCP phase complete: Office LAN devices that exist in config should have IP addresses."
+        "• • • • • • • • • DHCP phase complete: Office + Living Room LAN devices that exist in config "
+        "should have IP addresses."
     )
 
     # ---------- Simple L3 demo: office_pc -> printer ----------
-    LOG.info("• • • • • • • • === PHASE 7: L3 test — office_pc -> printer ===")
+    LOG.info("• • • • • • • • • === PHASE 7: L3 test — office_pc -> printer ===")
     office_pc = devices.get("office_pc")
     printer = devices.get("printer")
 
     if not office_pc or not printer:
         LOG.warning(
-            "• • • • • • • • L3 test skipped: need both 'office_pc' and 'printer' in devices.yaml"
+            "• • • • • • • • • L3 test skipped: need both 'office_pc' and 'printer' in devices.yaml"
         )
         return
 
@@ -335,7 +366,7 @@ def start_l3(cfg: dict, topology: dict) -> None:
         b"Hello from office_pc to printer",
     )
 
-    LOG.info("• • • • • • • • L3 phase complete: ARP + unicast IP delivery demo finished.")
+    LOG.info("• • • • • • • • • L3 phase complete: ARP + unicast IP delivery demo finished.")
 
 
 # ---------------------------------------------------------------------------
@@ -344,7 +375,7 @@ def start_l3(cfg: dict, topology: dict) -> None:
 
 def main() -> None:
     configure_logging()
-    LOG.info("• • • • • • • • Starting network demo driver...")
+    LOG.info("• • • • • • • • • Starting network demo driver...")
     cfg, topology = start_l1()
     start_l2(topology)
     start_l3(cfg, topology)
